@@ -10,7 +10,7 @@ obj.__index = obj
 obj.name = "SimpleTimeTracker"
 obj.version = "1.0"
 obj.author = "Jacob Bennett <jacob@fatobesegoo.se>"
-obj.homepage = "https://github.com/sc8ing/Spoons"
+obj.homepage = "https://github.com/sc8ing/SimpleTimeTracker"
 obj.license = "MIT - https://opensource.org/licenses/MIT"
 
 -- SimpleTimeTracker:init()
