@@ -13,14 +13,27 @@ obj.author = "Jacob Bennett <jacob@fatobesegoo.se>"
 obj.homepage = "https://github.com/sc8ing/SimpleTimeTracker"
 obj.license = "MIT - https://opensource.org/licenses/MIT"
 
+local function prettyTimeDiff(diffSecs)
+    local hours = math.floor(diffSecs / 60 / 60)
+    local minutes = math.floor((diffSecs - (hours * 60 * 60)) / 60)
+    return hours, minutes
+end
+
+local function prettyTime(epochSecs)
+    return os.date("%m/%d/%y %H:%M", epochSecs)
+end
+
+
 -- SimpleTimeTracker:init()
 -- Method
 -- Initialize the spoon
 function obj:init()
     self.logger = hs.logger.new(obj.name, "debug")
     self.timer = nil
+    self.openLogFile = nil
     self.state = {
-        idledAt = 0
+        idledAt = 0,
+        activeAt = os.time()
     }
 end
 
@@ -41,6 +54,7 @@ function obj:start(options)
     }
     self.options = options
     setmetatable(self.options, { __index = defaultOps })
+    self:recordActive()
     self.timer = hs.timer.new(2, function ()
         self:tick()
     end)
@@ -57,15 +71,14 @@ function obj:stop()
         self:recordIdle()
     end
     self.timer:stop()
+    self.openLogFile:close()
 end
 
 -- SimpleTimeTracker:showTime()
 -- Method
 -- Alter the amount of time tracked today rounded to hours and minutes
 function obj:showTime()
-    local totalSeconds = self:totalTime()
-    local hours = math.floor(totalSeconds / 60 / 60)
-    local minutes = math.floor((totalSeconds - (hours * 60 * 60)) / 60)
+    local hours, minutes = prettyTimeDiff(self:totalTime())
     hs.alert(hours .. " Hours " .. minutes .. " Minutes")
 end
 
@@ -78,7 +91,7 @@ end
 function obj:totalTime()
     local now = os.date("*t", os.time())
     local dayStart = os.time { year = now.year, month = now.month, day = now.day, hour = 0 }
-    local logFile = io.open(self.options.logFilePath, "r")
+    local logFile = assert(io.open(self.options.logFilePath, "r"))
     local totalTime = 0
     for line in logFile:lines() do
         self:debug("checking line " .. line)
@@ -91,31 +104,38 @@ function obj:totalTime()
                 maybeEnd = tonumber(time)
             end
         end
-        if maybeStart ~= nil then
-            if maybeStart < dayStart then
+        if maybeStart == nil or maybeEnd == nil then
+            self:debug("skipping because start or end is nil")
+        else
+            if maybeStart < dayStart and maybeEnd > dayStart then
                 self:debug("setting maybe start to day start")
                 maybeStart = dayStart
             end
-            self:debug(maybeStart .. " to " .. (maybeEnd or "null"))
-            if maybeEnd ~= nil and maybeEnd > dayStart then
-                self:debug("adding " .. (maybeEnd - maybeStart))
+            self:debug(prettyTime(maybeStart) .. " to " .. prettyTime(maybeEnd))
+
+            if maybeEnd > dayStart then
+                local h, m = prettyTimeDiff(maybeEnd - maybeStart)
+                self:debug("adding " .. h .. ":" .. m)
                 totalTime = totalTime + (maybeEnd - maybeStart)
-            elseif maybeEnd == nil then
-                self:debug("adding to now " .. (os.time() - maybeStart))
-                totalTime = totalTime + (os.time() - maybeStart)
             else
                 self:debug("ignoring line")
             end
         end
     end
     logFile:close()
+    -- Add a potential segment that hasn't been recorded to the log file yet
+    if self.state.activeAt and not self.state.idledAt then
+        local lastTime = os.difftime(os.time(), self.state.activeAt)
+        self:debug("adding unrecorded time of " .. lastTime)
+        totalTime = totalTime + lastTime
+    end
     return totalTime
 end
 
 -- SimpleTimeTracker:bindHotkeys()
 -- Method
 -- Bind hot keys
--- 
+--
 -- Parameters:
 -- * mapping - A table containing hot key modifier/key details for:
 --     * showTime - Alter the total amount of time tracked for today in hours and minutes
@@ -133,36 +153,33 @@ function obj:debug(msg)
     end
 end
 
-function obj:recordIdle()
-    self.state.idledAt = os.time()
-    local theLog = io.open(self.options.logFilePath, "a+")
-    theLog:write((os.time() - hs.host.idleTime()) .. "\n")
-    theLog:flush()
-    theLog:close()
+function obj:writeToLog(s)
+    if not self.openLogFile then
+        self.openLogFile = assert(io.open(self.options.logFilePath, "a+"))
+    end
+    self.openLogFile:write(s .. "\n")
+    self.openLogFile:flush()
 end
 
-function obj:recordUnidle()
+function obj:recordIdle()
+    self:debug('idling')
+    local idledAt = math.max(self.state.activeAt, os.time() - hs.host.idleTime())
+    self.state.idledAt = idledAt
+    self:writeToLog(self.state.activeAt .. " - " .. self.state.idledAt)
+    self.state.activeAt = nil
+end
+
+function obj:recordActive()
+    self:debug('activating')
+    self.state.activeAt = os.time()
     self.state.idledAt = nil
-    local theLog = io.open(self.options.logFilePath, "a+")
-    theLog:write(os.time() .. " - ")
-    theLog:flush()
-    theLog:close()
 end
 
 function obj:tick()
-    -- Currently marked as unidle (no idledAt time), but have been idling for long enough
-    -- that we should start counting this as idle time
-    if not self.state.idledAt and hs.host.idleTime() > self.options.hasIdledWaitSeconds then
-        self:debug("idled " .. hs.host.idleTime())
-        obj.recordIdle(self)
-    -- If we've been idling for less time than has passed since we were marked as idle, then
-    -- that means we started moving again at some point since the last tick, so mark unidled
-    elseif os.difftime(os.time(), self.state.idledAt or os.time()) > hs.host.idleTime() then
-        self:debug("unidled")
-        obj.recordUnidle(self)
-    -- Otherwise no change of state has happened and we are still idle/unidle just like last tick
-    else
-        self:debug("still un/idle from " .. (self.state.idledAt or 'not idle'))
+    if self.state.activeAt and hs.host.idleTime() > self.options.hasIdledWaitSeconds then
+        self:recordIdle()
+    elseif self.state.idledAt and os.difftime(os.time(), self.state.idledAt) > hs.host.idleTime() then
+        self:recordActive()
     end
 end
 
