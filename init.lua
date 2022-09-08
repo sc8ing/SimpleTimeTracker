@@ -30,10 +30,10 @@ end
 function obj:init()
     self.logger = hs.logger.new(obj.name, "debug")
     self.timer = nil
-    self.openLogFile = nil
     self.state = {
         idledAt = 0,
-        activeAt = os.time()
+        activeAt = os.time(),
+        isPaused = false
     }
 end
 
@@ -47,12 +47,13 @@ end
 --     * debugOn - Whether debug information should be logged to the hammerspoon console
 --     * hasIdledWaitSeconds - How long to wait before marking the user as idle
 function obj:start(options)
+    self.state.isPaused = false
     local defaultOps = {
         hasIdledWaitSeconds = 60 * 5,
         debugOn = false,
         logFilePath = nil
     }
-    self.options = options
+    self.options = options or self.options or {}
     setmetatable(self.options, { __index = defaultOps })
     self:recordActive()
     self.timer = hs.timer.new(2, function ()
@@ -71,7 +72,7 @@ function obj:stop()
         self:recordIdle()
     end
     self.timer:stop()
-    self.openLogFile:close()
+    self.state.isPaused = true
 end
 
 -- SimpleTimeTracker:showTime()
@@ -154,11 +155,10 @@ function obj:debug(msg)
 end
 
 function obj:writeToLog(s)
-    if not self.openLogFile then
-        self.openLogFile = assert(io.open(self.options.logFilePath, "a+"))
-    end
-    self.openLogFile:write(s .. "\n")
-    self.openLogFile:flush()
+    local openLogFile = assert(io.open(self.options.logFilePath, "a+"))
+    openLogFile:write(s .. "\n")
+    openLogFile:flush()
+    openLogFile:close()
 end
 
 function obj:recordIdle()
@@ -176,6 +176,9 @@ function obj:recordActive()
 end
 
 function obj:tick()
+    if self.state.isPaused then
+        return
+    end
     if self.state.activeAt and hs.host.idleTime() > self.options.hasIdledWaitSeconds then
         self:recordIdle()
     elseif self.state.idledAt and os.difftime(os.time(), self.state.idledAt) > hs.host.idleTime() then
